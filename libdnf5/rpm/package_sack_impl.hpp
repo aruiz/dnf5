@@ -32,6 +32,7 @@ extern "C" {
 #include <solv/pool.h>
 }
 
+#include <future>
 #include <optional>
 #include <vector>
 
@@ -77,6 +78,10 @@ public:
     std::vector<std::pair<Id, Solvable *>> & get_sorted_icase_solvables();
 
     void make_provides_ready();
+
+    /// Launches the provides computation on a background thread so that the
+    /// first query needing provides finds the work already done (or nearly so).
+    void start_eager_provides();
 
     void invalidate_provides() { provides_ready = false; }
 
@@ -128,7 +133,10 @@ public:
     void recompute_considered_in_pool();
 
 private:
+    void make_provides_ready_impl();
+
     bool provides_ready{false};
+    std::shared_future<void> eager_provides_future;
 
     BaseWeakPtr base;
 

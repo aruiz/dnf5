@@ -62,6 +62,12 @@ class ModuleSack;
 
 }  // namespace libdnf5::module
 
+namespace libdnf5::repo {
+
+class RepoSack;
+
+}  // namespace libdnf5::repo
+
 namespace libdnf5::rpm::solv {
 
 class SolvPrivate;
@@ -184,6 +190,7 @@ private:
     friend Reldep;
     friend class ReldepList;
     friend class repo::Repo;
+    friend class repo::RepoSack;
     friend class PackageQuery;
     friend class Transaction;
     friend libdnf5::Swdb;

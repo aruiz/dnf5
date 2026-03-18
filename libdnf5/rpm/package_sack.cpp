@@ -50,10 +50,23 @@ using LibsolvRepo = Repo;
 namespace libdnf5::rpm {
 
 void PackageSack::Impl::make_provides_ready() {
+    if (eager_provides_future.valid()) {
+        eager_provides_future.get();
+        return;
+    }
     if (provides_ready) {
         return;
     }
+    make_provides_ready_impl();
+}
 
+void PackageSack::Impl::start_eager_provides() {
+    eager_provides_future = std::async(std::launch::async, [this]() {
+        make_provides_ready_impl();
+    }).share();
+}
+
+void PackageSack::Impl::make_provides_ready_impl() {
     // Temporarily replaces the considered map with an empty one. Ignores "excludes" during calculation provides.
     libdnf5::solv::SolvMap original_considered_map(0);
     get_rpm_pool(base).swap_considered_map(original_considered_map);

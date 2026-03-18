@@ -33,6 +33,7 @@
 #include "solv/pool.hpp"
 #include "solv/solver.hpp"
 #include "solv_repo.hpp"
+#include "../rpm/package_sack_impl.hpp"
 #include "utils/auth.hpp"
 #include "utils/deprecate.hpp"
 #include "utils/fs/utils.hpp"
@@ -838,8 +839,18 @@ void RepoSack::Impl::update_and_load_repos(libdnf5::repo::RepoQuery & repos, boo
 
     fix_group_missing_xml();
 
+    // Opportunity B: kick off pool internalization + provides creation on a
+    // background thread so the first query that needs provides finds the work
+    // already done (or nearly done).
+    base->get_rpm_package_sack()->p_impl->start_eager_provides();
+
+    // Opportunity C: RPM excludes/includes and comps excludes operate on
+    // different sacks with no shared mutable state — run them in parallel.
+    auto comps_excludes_future = std::async(std::launch::async, [this]() {
+        base->get_comps_sack()->load_config_excludes();
+    });
     base->get_rpm_package_sack()->load_config_excludes_includes();
-    base->get_comps_sack()->load_config_excludes();
+    comps_excludes_future.get();
 #ifdef WITH_MODULEMD
     base->get_module_sack()->p_impl->module_filtering();
 #endif
