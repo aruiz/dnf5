@@ -948,51 +948,106 @@ void pre_build_solv_cache(const ConfigRepo & config, const DownloadData & downlo
             checksum_calc(chksum, repomd_file);
         }
 
-        // Check if primary .solv already exists and is valid — skip if so
+        // Determine which caches need building
         auto primary_solv_path = compute_solv_file_path(config, nullptr);
-        if (solv_cache_is_valid(chksum, primary_solv_path)) {
+        bool need_primary = !solv_cache_is_valid(chksum, primary_solv_path);
+
+        auto updateinfo_fn = download_data.get_metadata_path(RepoDownloader::MD_FILENAME_UPDATEINFO);
+        auto updateinfo_solvx_path = !updateinfo_fn.empty()
+            ? compute_solv_file_path(config, RepoDownloader::MD_FILENAME_UPDATEINFO)
+            : std::filesystem::path{};
+        bool need_updateinfo = !updateinfo_fn.empty() && !solv_cache_is_valid(chksum, updateinfo_solvx_path);
+
+        auto comps_fn = download_data.get_metadata_path(RepoDownloader::MD_FILENAME_GROUP_GZ);
+        if (comps_fn.empty()) {
+            comps_fn = download_data.get_metadata_path(RepoDownloader::MD_FILENAME_GROUP);
+        }
+        auto comps_solvx_path = !comps_fn.empty()
+            ? compute_solv_file_path(config, RepoDownloader::MD_FILENAME_GROUP)
+            : std::filesystem::path{};
+        bool need_comps = !comps_fn.empty() && !solv_cache_is_valid(chksum, comps_solvx_path);
+
+        if (!need_primary && !need_updateinfo && !need_comps) {
             return;
         }
 
-        // Create an isolated libsolv pool and repo for this thread
-        Pool * temp_pool = pool_create();
-        ::Repo * temp_repo = repo_create(temp_pool, config.get_id().c_str());
+        // Build primary .solv and/or updateinfo .solvx using the same
+        // isolated pool.  UPDATEINFO does not require REPO_EXTEND_SOLVABLES
+        // so it can be parsed independently.
+        if (need_primary || need_updateinfo) {
+            Pool * temp_pool = pool_create();
+            ::Repo * temp_repo = repo_create(temp_pool, config.get_id().c_str());
 
-        // Parse repomd + primary XML
-        {
-            fs::File repomd_file(repomd_fn, "r");
-            if (repo_add_repomdxml(temp_repo, repomd_file.get(), 0) != 0) {
-                repo_free(temp_repo, 0);
-                pool_free(temp_pool);
-                return;
+            {
+                fs::File repomd_file(repomd_fn, "r");
+                if (repo_add_repomdxml(temp_repo, repomd_file.get(), 0) != 0) {
+                    repo_free(temp_repo, 0);
+                    pool_free(temp_pool);
+                    return;
+                }
             }
+
+            if (need_primary) {
+                int solvables_start = temp_pool->nsolvables;
+                int repodata_start = temp_repo->nrepodata;
+
+                fs::File primary_file(primary_fn, "r", true);
+                if (repo_add_rpmmd(temp_repo, primary_file.get(), 0, 0) != 0) {
+                    repo_free(temp_repo, 0);
+                    pool_free(temp_pool);
+                    return;
+                }
+
+                int solvables_end = temp_pool->nsolvables;
+                int repodata_end = temp_repo->nrepodata;
+
+                write_solv_file(
+                    temp_repo, chksum, primary_solv_path,
+                    solvables_start, solvables_end, repodata_start, repodata_end);
+            }
+
+            if (need_updateinfo) {
+                int ui_solvables_start = temp_pool->nsolvables;
+                int ui_repodata_start = temp_repo->nrepodata;
+
+                fs::File updateinfo_file(updateinfo_fn, "r", true);
+                if (repo_add_updateinfoxml(temp_repo, updateinfo_file.get(), 0) == 0) {
+                    int ui_solvables_end = temp_pool->nsolvables;
+                    int ui_repodata_end = temp_repo->nrepodata;
+
+                    write_solv_file(
+                        temp_repo, chksum, updateinfo_solvx_path,
+                        ui_solvables_start, ui_solvables_end,
+                        ui_repodata_start, ui_repodata_end);
+                }
+            }
+
+            repo_free(temp_repo, 0);
+            pool_free(temp_pool);
         }
 
-        int solvables_start = 0;
-        int repodata_start = 0;
-        {
-            solvables_start = temp_pool->nsolvables;
-            repodata_start = temp_repo->nrepodata;
+        // Build comps .solvx in a separate pool (at runtime comps data lives
+        // in its own pool).  COMPS does not require REPO_EXTEND_SOLVABLES.
+        if (need_comps) {
+            Pool * comps_pool = pool_create();
+            ::Repo * comps_repo = repo_create(comps_pool, config.get_id().c_str());
 
-            fs::File primary_file(primary_fn, "r", true);
-            if (repo_add_rpmmd(temp_repo, primary_file.get(), 0, 0) != 0) {
-                repo_free(temp_repo, 0);
-                pool_free(temp_pool);
-                return;
+            int solvables_start = comps_pool->nsolvables;
+            int repodata_start = comps_repo->nrepodata;
+
+            fs::File comps_file(comps_fn, "r", true);
+            if (repo_add_comps(comps_repo, comps_file.get(), 0) == 0) {
+                int solvables_end = comps_pool->nsolvables;
+                int repodata_end = comps_repo->nrepodata;
+
+                write_solv_file(
+                    comps_repo, chksum, comps_solvx_path,
+                    solvables_start, solvables_end, repodata_start, repodata_end);
             }
+
+            repo_free(comps_repo, 0);
+            pool_free(comps_pool);
         }
-
-        int solvables_end = temp_pool->nsolvables;
-        int repodata_end = temp_repo->nrepodata;
-
-        // Write primary .solv only. Extensions (.solvx) are left to the loader
-        // thread — they are loaded lazily and building them here would require
-        // re-parsing primary XML for each extension (REPO_EXTEND_SOLVABLES),
-        // which costs more than it saves.
-        write_solv_file(temp_repo, chksum, primary_solv_path, solvables_start, solvables_end, repodata_start, repodata_end);
-
-        repo_free(temp_repo, 0);
-        pool_free(temp_pool);
     } catch (...) {
         // Pre-builder is best-effort; any failure is silently ignored.
         // The loader thread will fall back to parsing XML directly.
