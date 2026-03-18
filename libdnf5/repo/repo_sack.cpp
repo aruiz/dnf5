@@ -53,7 +53,11 @@
 #include "libdnf5/utils/fs/temp.hpp"
 
 extern "C" {
+#include <solv/hash.h>
+#include <solv/pool.h>
+#include <solv/strpool.h>
 #include <solv/testcase.h>
+#include <solv/util.h>
 }
 
 #include "utils/thread_pool.hpp"
@@ -94,6 +98,84 @@ void load_repos_common(libdnf5::BaseWeakPtr & base) {
     if (!base->are_repos_configured()) {
         base->notify_repos_configured();
     }
+}
+
+
+/// Scans .solv cache headers for all repos and pre-sizes the pool's string
+/// hash table to its final capacity.  Without this, libsolv rehashes the
+/// entire table every time a repo pushes the load factor past 0.5.
+void presize_pool_string_hashtable(
+    Pool * pool,
+    const libdnf5::repo::RepoQuery & repos,
+    libdnf5::Logger & logger) {
+    int total_strings = 0;
+    int scanned = 0;
+
+    for (const auto & repo : repos) {
+        if (repo->get_type() != libdnf5::repo::Repo::Type::AVAILABLE) {
+            continue;
+        }
+        auto path = std::filesystem::path(repo->get_config().get_cachedir()) / "solv" /
+                    (repo->get_config().get_id() + ".solv");
+
+        // .solv header: magic(4) version(4) numid(4) … — all big-endian u32
+        std::FILE * fp = std::fopen(path.c_str(), "rb");
+        if (!fp) {
+            continue;
+        }
+        unsigned char hdr[12];
+        bool ok = std::fread(hdr, 1, sizeof(hdr), fp) == sizeof(hdr);
+        std::fclose(fp);
+        if (!ok) {
+            continue;
+        }
+
+        auto be32 = [](const unsigned char * p) {
+            return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
+        };
+        if (be32(hdr) != ('S' << 24 | 'O' << 16 | 'L' << 8 | 'V')) {
+            continue;
+        }
+        int numid = static_cast<int>(be32(hdr + 8));
+        if (numid > 0) {
+            total_strings += numid;
+            ++scanned;
+        }
+    }
+    if (scanned == 0 || total_strings == 0) {
+        return;
+    }
+
+    logger.debug("Pre-sizing pool string hash: {} repos, ~{} strings", scanned, total_strings);
+
+    // Replicate libsolv's mkmask() + stringpool_resize_hash():
+    // find smallest (2^n − 1) keeping load factor below 0.5.
+    Stringpool * ss = &pool->ss;
+    Hashval target = static_cast<Hashval>(ss->nstrings) + static_cast<Hashval>(total_strings);
+    Hashval hashmask = 63;
+    while (hashmask < 2 * target + 3) {
+        hashmask = hashmask * 2 + 1;
+    }
+    if (hashmask <= ss->stringhashmask) {
+        return;
+    }
+
+    ss->stringhashmask = hashmask;
+    solv_free(ss->stringhashtbl);
+    ss->stringhashtbl = static_cast<Hashtable>(solv_calloc(hashmask + 1, sizeof(Id)));
+    Hashtable ht = ss->stringhashtbl;
+    for (int i = 1; i < ss->nstrings; i++) {
+        Hashval h = strhash(ss->stringspace + ss->strings[i]) & hashmask;
+        Hashval hh = HASHCHAIN_START;
+        while (ht[h] != 0) {
+            h = HASHCHAIN_NEXT(h, hh, hashmask);
+        }
+        ht[h] = i;
+    }
+
+    // Pre-allocate the string offset array (STRING_BLOCK=2047 in libsolv).
+    ss->strings = static_cast<Offset *>(solv_extend_resize(
+        ss->strings, static_cast<size_t>(ss->nstrings) + static_cast<size_t>(total_strings), sizeof(Offset), 2047));
 }
 
 
@@ -404,6 +486,8 @@ void RepoSack::Impl::update_and_load_repos(libdnf5::repo::RepoQuery & repos, boo
     std::size_t num_repos_loaded{0};               // number of repositories already loaded into solv sack
 
     prepared_repos.reserve(repos.size() + 1);  // optimization: preallocate memory to avoid realocations, +1 stop tag
+
+    presize_pool_string_hashtable(*get_rpm_pool(base), repos, *logger);
 
     // This thread loads prepared repositories into solvable sack
     std::thread thread_sack_loader([&]() {
