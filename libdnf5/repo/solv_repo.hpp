@@ -124,7 +124,7 @@ public:
 
 private:
     // "type_name == nullptr" means load "primary" cache (.solv file)
-    bool load_solv_cache(solv::Pool & pool, const char * type_name, int flags);
+    bool load_solv_cache(const char * type_name, int flags);
 
     /// Writes libsolv's .solv cache file with main libsolv repodata.
     void write_main(bool load_after_write);
@@ -148,7 +148,7 @@ private:
     int updateinfo_solvables_start{0};
     int updateinfo_solvables_end{0};
 
-    bool can_use_solvfile_cache(solv::Pool & pool, utils::fs::File & solvfile_cache);
+    bool can_use_solvfile_cache(utils::fs::File & solvfile_cache);
 
     /// List of system repo groups without valid file with xml definition
     std::vector<std::string> groups_missing_xml;
