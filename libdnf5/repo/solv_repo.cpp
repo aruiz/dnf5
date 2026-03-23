@@ -41,8 +41,6 @@ extern "C" {
 #include <solv/repo_write.h>
 }
 
-#include <future>
-
 
 namespace libdnf5::repo {
 
@@ -236,11 +234,6 @@ SolvRepo::SolvRepo(const libdnf5::BaseWeakPtr & base, const ConfigRepo & config,
 
 
 SolvRepo::~SolvRepo() {
-    for (auto & f : deferred_solv_writes) {
-        if (f.valid()) {
-            f.wait();
-        }
-    }
     repo->appdata = nullptr;
     comps_repo->appdata = nullptr;
 }
@@ -621,23 +614,12 @@ void SolvRepo::write_main(bool load_after_write) {
         main_repodata_end = repo->nrepodata;
     }
 
-    // Defer the final rename to a background task. The file is already written
-    // and (if load_after_write) reloaded via fd, so the rename to the cache
-    // path only matters for future runs. libsolv keeps the fd open so the
-    // rename is safe even while data is lazily loaded from the file.
-    auto tmp_path = cache_tmp_file.get_path();
+    std::filesystem::permissions(
+        cache_tmp_file.get_path(),
+        std::filesystem::perms::group_read | std::filesystem::perms::others_read,
+        std::filesystem::perm_options::add);
+    std::filesystem::rename(cache_tmp_file.get_path(), solvfile_path);
     cache_tmp_file.release();
-    auto finalize = std::async(std::launch::async, [tmp_path, solvfile_path]() {
-        try {
-            std::filesystem::permissions(
-                tmp_path,
-                std::filesystem::perms::group_read | std::filesystem::perms::others_read,
-                std::filesystem::perm_options::add);
-            std::filesystem::rename(tmp_path, solvfile_path);
-        } catch (...) {
-        }
-    });
-    deferred_solv_writes.push_back(std::move(finalize));
 }
 
 
@@ -718,19 +700,12 @@ void SolvRepo::write_ext(Id repodata_id, RepodataType type, const std::string & 
         data->state = REPODATA_AVAILABLE;
     }
 
-    auto tmp_path = cache_tmp_file.get_path();
+    std::filesystem::permissions(
+        cache_tmp_file.get_path(),
+        std::filesystem::perms::group_read | std::filesystem::perms::others_read,
+        std::filesystem::perm_options::add);
+    std::filesystem::rename(cache_tmp_file.get_path(), solvfile_path);
     cache_tmp_file.release();
-    auto finalize = std::async(std::launch::async, [tmp_path, solvfile_path]() {
-        try {
-            std::filesystem::permissions(
-                tmp_path,
-                std::filesystem::perms::group_read | std::filesystem::perms::others_read,
-                std::filesystem::perm_options::add);
-            std::filesystem::rename(tmp_path, solvfile_path);
-        } catch (...) {
-        }
-    });
-    deferred_solv_writes.push_back(std::move(finalize));
 }
 
 
