@@ -59,7 +59,7 @@ static std::array<char, SOLV_USERDATA_SOLV_TOOLVERSION_SIZE> get_padded_solv_too
     return padded_solv_toolversion;
 }
 
-void SolvRepo::userdata_fill(SolvUserdata * userdata) {
+static void userdata_fill(SolvUserdata * userdata, const unsigned char * chksum) {
     if (strlen(solv_toolversion) > SOLV_USERDATA_SOLV_TOOLVERSION_SIZE) {
         libdnf_throw_assertion(
             "Libsolv's solv_toolvesion is: {} long but we expect max of: {}",
@@ -70,7 +70,7 @@ void SolvRepo::userdata_fill(SolvUserdata * userdata) {
     memcpy(userdata->dnf_magic, SOLV_USERDATA_MAGIC.data(), SOLV_USERDATA_MAGIC.size());
     memcpy(userdata->dnf_version, SOLV_USERDATA_DNF_VERSION.data(), SOLV_USERDATA_DNF_VERSION.size());
     memcpy(userdata->libsolv_version, get_padded_solv_toolversion().data(), SOLV_USERDATA_SOLV_TOOLVERSION_SIZE);
-    memcpy(userdata->checksum, checksum, CHKSUM_BYTES);
+    memcpy(userdata->checksum, chksum, CHKSUM_BYTES);
 }
 
 bool SolvRepo::can_use_solvfile_cache(solv::Pool & pool, fs::File & solvfile_cache) {
@@ -571,8 +571,7 @@ void SolvRepo::write_main(bool load_after_write) {
         chksum);
 
     SolvUserdata solv_userdata{};
-    userdata_fill(&solv_userdata);
-
+    userdata_fill(&solv_userdata, checksum);
 
     Repowriter * writer = repowriter_create(repo);
     repowriter_set_userdata(writer, &solv_userdata, SOLV_USERDATA_SIZE);
@@ -646,7 +645,7 @@ void SolvRepo::write_ext(Id repodata_id, RepodataType type, const std::string & 
 
 
     SolvUserdata solv_userdata{};
-    userdata_fill(&solv_userdata);
+    userdata_fill(&solv_userdata, checksum);
 
     Repowriter * writer;
     if (type == RepodataType::COMPS) {
@@ -838,10 +837,7 @@ static void write_solv_file(
     auto & cache_file = tmp_file.open_as_file("w+");
 
     SolvUserdata solv_userdata{};
-    memcpy(solv_userdata.dnf_magic, SOLV_USERDATA_MAGIC.data(), SOLV_USERDATA_MAGIC.size());
-    memcpy(solv_userdata.dnf_version, SOLV_USERDATA_DNF_VERSION.data(), SOLV_USERDATA_DNF_VERSION.size());
-    memcpy(solv_userdata.libsolv_version, get_padded_solv_toolversion().data(), SOLV_USERDATA_SOLV_TOOLVERSION_SIZE);
-    memcpy(solv_userdata.checksum, chksum, CHKSUM_BYTES);
+    userdata_fill(&solv_userdata, chksum);
 
     Repowriter * writer = repowriter_create(temp_repo);
     repowriter_set_userdata(writer, &solv_userdata, SOLV_USERDATA_SIZE);

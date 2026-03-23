@@ -152,7 +152,6 @@ private:
     int updateinfo_solvables_end{0};
 
     bool can_use_solvfile_cache(solv::Pool & pool, utils::fs::File & solvfile_cache);
-    void userdata_fill(SolvUserdata * userdata);
 
     /// List of system repo groups without valid file with xml definition
     std::vector<std::string> groups_missing_xml;
