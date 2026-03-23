@@ -132,9 +132,6 @@ private:
     /// Writes libsolv's .solvx cache file with extended libsolv repodata.
     void write_ext(Id repodata_id, RepodataType type, const std::string & type_name);
 
-    std::string solv_file_name(const char * type = nullptr);
-    std::filesystem::path solv_file_path(const char * type = nullptr);
-
     libdnf5::BaseWeakPtr base;
     const ConfigRepo & config;
 

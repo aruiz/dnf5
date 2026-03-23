@@ -168,6 +168,20 @@ void checksum_calc(unsigned char * out, fs::File & file) {
 }
 
 
+static std::string solv_file_name(const ConfigRepo & config, const char * type) {
+    if (type != nullptr) {
+        return fmt::format("{}-{}.solvx", config.get_id(), type);
+    } else {
+        return config.get_id() + ".solv";
+    }
+}
+
+
+static std::filesystem::path solv_file_path(const ConfigRepo & config, const char * type = nullptr) {
+    return std::filesystem::path(config.get_cachedir()) / CACHE_SOLV_FILES_DIR / solv_file_name(config, type);
+}
+
+
 static const char * repodata_type_to_name(RepodataType type) {
     switch (type) {
         case RepodataType::FILELISTS:
@@ -517,7 +531,7 @@ void SolvRepo::set_subpriority(int subpriority) {
 bool SolvRepo::load_solv_cache(solv::Pool & pool, const char * type_name, int flags) {
     auto & logger = *base->get_logger();
 
-    auto path = solv_file_path(type_name);
+    auto path = solv_file_path(config, type_name);
 
     try {
         fs::File cache_file(path, "r");
@@ -556,12 +570,12 @@ void SolvRepo::write_main(bool load_after_write) {
 
     const char * chksum = pool_bin2hex(*pool, checksum, solv_chksum_len(CHKSUM_TYPE));
 
-    const auto solvfile_path = solv_file_path();
-    const auto solvfile_parent_dir = solvfile_path.parent_path();
+    const auto solvfile = solv_file_path(config);
+    const auto solvfile_parent_dir = solvfile.parent_path();
 
     std::filesystem::create_directory(solvfile_parent_dir);
 
-    auto cache_tmp_file = fs::TempFile(solvfile_parent_dir, solvfile_path.filename());
+    auto cache_tmp_file = fs::TempFile(solvfile_parent_dir, solvfile.filename());
     auto & cache_file = cache_tmp_file.open_as_file("w+");
 
     logger.trace(
@@ -617,7 +631,7 @@ void SolvRepo::write_main(bool load_after_write) {
         cache_tmp_file.get_path(),
         std::filesystem::perms::group_read | std::filesystem::perms::others_read,
         std::filesystem::perm_options::add);
-    std::filesystem::rename(cache_tmp_file.get_path(), solvfile_path);
+    std::filesystem::rename(cache_tmp_file.get_path(), solvfile);
     cache_tmp_file.release();
 }
 
@@ -629,12 +643,12 @@ void SolvRepo::write_ext(Id repodata_id, RepodataType type, const std::string & 
     solv::Pool & pool = type == RepodataType::COMPS ? static_cast<solv::Pool &>(get_comps_pool(base))
                                                     : static_cast<solv::Pool &>(get_rpm_pool(base));
 
-    const auto solvfile_path = solv_file_path(type_name.c_str());
-    const auto solvfile_parent_dir = solvfile_path.parent_path();
+    const auto solvfile = solv_file_path(config, type_name.c_str());
+    const auto solvfile_parent_dir = solvfile.parent_path();
 
     std::filesystem::create_directory(solvfile_parent_dir);
 
-    auto cache_tmp_file = fs::TempFile(solvfile_parent_dir, solvfile_path.filename());
+    auto cache_tmp_file = fs::TempFile(solvfile_parent_dir, solvfile.filename());
     auto & cache_file = cache_tmp_file.open_as_file("w+");
 
     logger.trace(
@@ -703,23 +717,11 @@ void SolvRepo::write_ext(Id repodata_id, RepodataType type, const std::string & 
         cache_tmp_file.get_path(),
         std::filesystem::perms::group_read | std::filesystem::perms::others_read,
         std::filesystem::perm_options::add);
-    std::filesystem::rename(cache_tmp_file.get_path(), solvfile_path);
+    std::filesystem::rename(cache_tmp_file.get_path(), solvfile);
     cache_tmp_file.release();
 }
 
 
-std::string SolvRepo::solv_file_name(const char * type) {
-    if (type != nullptr) {
-        return fmt::format("{}-{}.solvx", config.get_id(), type);
-    } else {
-        return config.get_id() + ".solv";
-    }
-}
-
-
-std::filesystem::path SolvRepo::solv_file_path(const char * type) {
-    return std::filesystem::path(config.get_cachedir()) / CACHE_SOLV_FILES_DIR / solv_file_name(type);
-}
 
 bool SolvRepo::read_group_solvable_from_xml(const std::string & path) {
     auto & logger = *base->get_logger();
@@ -859,17 +861,6 @@ static void write_solv_file(
     tmp_file.release();
 }
 
-/// Computes the solv cache file path for a given repo config and optional type.
-static std::filesystem::path compute_solv_file_path(const ConfigRepo & config, const char * type) {
-    std::string filename;
-    if (type != nullptr) {
-        filename = fmt::format("{}-{}.solvx", config.get_id(), type);
-    } else {
-        filename = config.get_id() + ".solv";
-    }
-    return std::filesystem::path(config.get_cachedir()) / CACHE_SOLV_FILES_DIR / filename;
-}
-
 /// Checks if a solv cache file exists and matches the given checksum, without
 /// requiring a SolvRepo instance. Used by the pre-builder to skip work.
 static bool solv_cache_is_valid(const unsigned char * chksum, const std::filesystem::path & path) {
@@ -920,7 +911,7 @@ void pre_build_solv_cache(const ConfigRepo & config, const DownloadData & downlo
         }
 
         // Check if primary .solv already exists and is valid — skip if so
-        auto primary_solv_path = compute_solv_file_path(config, nullptr);
+        auto primary_solv_path = solv_file_path(config);
         if (solv_cache_is_valid(chksum, primary_solv_path)) {
             return;
         }
